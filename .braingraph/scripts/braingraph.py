@@ -576,6 +576,29 @@ def cmd_register(pid_str=None, agent_name=None):
 def load_code_graph(root_dir):
     graph_path = os.path.join(root_dir, "graphify-out", "graph.json")
     if not os.path.exists(graph_path):
+        graphify_installed = False
+        try:
+            if os.name == 'nt':
+                subprocess.check_call(["where", "graphify"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            else:
+                subprocess.check_call(["which", "graphify"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            graphify_installed = True
+        except Exception:
+            pass
+            
+        if graphify_installed:
+            print("\n[BrainGraph] graphify-out/graph.json not found, but 'graphify' CLI is installed.")
+            print("[BrainGraph] Auto-bootstrapping local AST-only code graph index (running 'graphify extract . --no-cluster')...")
+            try:
+                subprocess.check_call(["graphify", "extract", ".", "--no-cluster"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                print("[BrainGraph] Successfully initialized local AST code graph.")
+            except Exception as e:
+                print(f"[BrainGraph] Warning: Failed to auto-bootstrap code graph: {e}")
+        else:
+            print("\n[BrainGraph] Note: Graphify is not installed, downstream dependency mapping is skipped.")
+            print("             To enable, install Graphify and run 'graphify extract'.")
+            
+    if not os.path.exists(graph_path):
         return None
         
     try:
