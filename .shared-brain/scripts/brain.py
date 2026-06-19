@@ -368,6 +368,387 @@ def harvest_temp_chat_history(root_dir):
             pass
     return None
 
+def load_agents_db():
+    root = Path.cwd()
+    db_file = root / ".shared-brain" / "agents.json"
+    if db_file.exists():
+        try:
+            with open(db_file, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {
+        "agents": {
+            "Claude Code": {"status": "Available", "limit_type": "Message-based", "max_limit": 50, "reset_time_hours": 5, "last_used": None, "manual_offset": 0},
+            "Windsurf Cascade": {"status": "Available", "limit_type": "Premium quota", "max_limit": 500, "reset_time_hours": null, "last_used": None, "manual_offset": 0},
+            "Antigravity": {"status": "Available", "limit_type": "Token-based", "max_limit": 100, "reset_time_hours": null, "last_used": None, "manual_offset": 0},
+            "Cursor Copilot/Composer": {"status": "Available", "limit_type": "Premium fast", "max_limit": 500, "reset_time_hours": null, "last_used": None, "manual_offset": 0},
+            "Aider": {"status": "Available", "limit_type": "Key-based", "max_limit": null, "reset_time_hours": null, "last_used": None, "manual_offset": 0}
+        }
+    }
+
+def save_agents_db(db):
+    root = Path.cwd()
+    sb_dir = root / ".shared-brain"
+    sb_dir.mkdir(exist_ok=True)
+    db_file = sb_dir / "agents.json"
+    try:
+        with open(db_file, "w", encoding="utf-8") as f:
+            json.dump(db, f, indent=2)
+    except Exception:
+        pass
+
+def calculate_agent_usage(root_dir):
+    usage = {}
+    path = os.path.join(root_dir, ".shared-brain", "temp_chat_history.md")
+    if os.path.exists(path):
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                content = f.read()
+                pattern = r'-\s*\*\*\[[^\]]*\]\s*\[([^\]]+)\]\*\*:'
+                matches = re.findall(pattern, content)
+                for m in matches:
+                    agent_name = m.strip()
+                    normalized_name = agent_name
+                    for k in ["Claude Code", "Windsurf Cascade", "Antigravity", "Cursor Copilot/Composer", "Aider"]:
+                        if agent_name.lower() in k.lower():
+                            normalized_name = k
+                            break
+                    usage[normalized_name] = usage.get(normalized_name, 0) + 1
+        except Exception:
+            pass
+    return usage
+
+def cmd_agents():
+    root = Path.cwd()
+    db = load_agents_db()
+    
+    while True:
+        usage = calculate_agent_usage(root)
+        print("\n" + "=" * 65)
+        print("SHARED BRAIN: AGENT USAGE & AVAILABILITY STATUS")
+        print("=" * 65)
+        
+        agents_list = sorted(list(db["agents"].keys()))
+        for idx, name in enumerate(agents_list, 1):
+            info = db["agents"][name]
+            status = info.get("status", "Available")
+            
+            color_start = ""
+            color_end = ""
+            if sys.stdout.isatty():
+                if status == "Available":
+                    color_start = "\033[92m" # Green
+                elif status == "Exhausted":
+                    color_start = "\033[91m" # Red
+                elif status == "Active":
+                    color_start = "\033[96m" # Cyan
+                color_end = "\033[0m"
+                
+            turns = usage.get(name, 0) + info.get("manual_offset", 0)
+            max_lim = info.get("max_limit")
+            limit_str = f"/{max_lim} msgs" if max_lim else " (no limit)"
+            usage_str = f"{turns}{limit_str}"
+            
+            print(f"{idx:2d}. {name:<25} | Status: {color_start}{status:<10}{color_end} | Task Usage: {usage_str:<15}")
+            
+        print("=" * 65)
+        print("Options:")
+        print("  [1-5] Toggle status (Available / Exhausted) for an agent")
+        print("  [a <num>] Set target agent manually to Active")
+        print("  [o <num> <offset>] Add manual usage offset (e.g., o 1 10 or o 1 -5)")
+        print("  [r]   Reset all manual usage offsets")
+        print("  [q]   Exit menu")
+        print("-" * 65)
+        
+        try:
+            choice = input("Enter choice: ").strip().lower()
+        except (KeyboardInterrupt, EOFError):
+            break
+            
+        if choice == 'q':
+            break
+        elif choice == 'r':
+            for name in db["agents"]:
+                db["agents"][name]["manual_offset"] = 0
+            save_agents_db(db)
+            print("Manual offsets reset.")
+        elif choice.startswith('a '):
+            try:
+                idx = int(choice.split()[1]) - 1
+                if 0 <= idx < len(agents_list):
+                    name = agents_list[idx]
+                    for n in db["agents"]:
+                        if db["agents"][n].get("status") == "Active":
+                            db["agents"][n]["status"] = "Available"
+                    db["agents"][name]["status"] = "Active"
+                    save_agents_db(db)
+                    print(f"Set {name} as Active.")
+                else:
+                    print("Invalid index.")
+            except Exception:
+                print("Usage: a <agent_number> (e.g., a 1)")
+        elif choice.startswith('o '):
+            try:
+                parts = choice.split()
+                idx = int(parts[1]) - 1
+                offset = int(parts[2])
+                if 0 <= idx < len(agents_list):
+                    name = agents_list[idx]
+                    db["agents"][name]["manual_offset"] = db["agents"][name].get("manual_offset", 0) + offset
+                    save_agents_db(db)
+                    print(f"Added offset of {offset} to {name}.")
+                else:
+                    print("Invalid index.")
+            except Exception:
+                print("Usage: o <agent_number> <offset> (e.g., o 1 5)")
+        else:
+            try:
+                idx = int(choice) - 1
+                if 0 <= idx < len(agents_list):
+                    name = agents_list[idx]
+                    current = db["agents"][name].get("status", "Available")
+                    new_status = "Exhausted" if current in ("Available", "Active") else "Available"
+                    db["agents"][name]["status"] = new_status
+                    db["agents"][name]["last_updated"] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    save_agents_db(db)
+                    print(f"Toggled {name} to {new_status}.")
+                else:
+                    print("Invalid choice.")
+            except ValueError:
+                print("Unknown option. Use index 1-5, 'a <num>', 'o <num> <val>', 'r', or 'q'.")
+
+def is_pid_alive(pid):
+    if os.name == 'nt':
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+            handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+            if handle:
+                exit_code = ctypes.c_ulong()
+                kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+                kernel32.CloseHandle(handle)
+                return exit_code.value == 259
+            return False
+        except Exception:
+            try:
+                res = subprocess.check_output(f'tasklist /FI "PID eq {pid}"', shell=True, text=True, stderr=subprocess.DEVNULL)
+                return str(pid) in res
+            except Exception:
+                return False
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+def cmd_register(pid_str=None, agent_name=None):
+    root = Path.cwd()
+    sb_dir = root / ".shared-brain"
+    sb_dir.mkdir(exist_ok=True)
+    
+    if pid_str:
+        pid = int(pid_str)
+    else:
+        pid = os.getppid()
+        
+    if not agent_name:
+        agent_name, ide = detect_environment()
+        
+    data = {
+        "pid": pid,
+        "agent": agent_name,
+        "started_at": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+    }
+    
+    with open(sb_dir / "agent.pid", "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+    print(f"Registered active agent '{agent_name}' (PID {pid}).")
+
+def cmd_watchdog():
+    import time
+    root = Path.cwd()
+    sb_dir = root / ".shared-brain"
+    pid_file = sb_dir / "agent.pid"
+    lock_file = sb_dir / "watchdog.lock"
+    
+    if lock_file.exists():
+        try:
+            with open(lock_file, "r") as f:
+                w_pid = int(f.read().strip())
+            if is_pid_alive(w_pid):
+                print(f"Watchdog daemon is already running (PID {w_pid}). Exiting.")
+                return
+        except Exception:
+            pass
+            
+    try:
+        with open(lock_file, "w") as f:
+            f.write(str(os.getpid()))
+    except Exception:
+        pass
+        
+    print(f"Watchdog daemon started (PID {os.getpid()}). Monitoring active agent...")
+    
+    check_interval = 15
+    
+    try:
+        while True:
+            if not pid_file.exists():
+                time.sleep(check_interval)
+                continue
+                
+            try:
+                with open(pid_file, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                agent_pid = data.get("pid")
+                agent_name = data.get("agent", "Unknown Agent")
+            except Exception:
+                time.sleep(check_interval)
+                continue
+                
+            if not is_pid_alive(agent_pid):
+                print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] Detected active agent '{agent_name}' (PID {agent_pid}) has terminated.")
+                
+                staged, unstaged, untracked = scan_git_status()
+                recent_files = scan_recent_files(root)
+                files_edited = set([x[1] for x in staged + unstaged] + untracked)
+                for rf, t in recent_files:
+                    files_edited.add(rf)
+                    
+                if files_edited:
+                    print("Workspace has uncommitted changes. Checking logs for credit exhaustion/errors...")
+                    
+                    logs_contain_error = False
+                    error_keyword = ""
+                    
+                    chat_hist = harvest_temp_chat_history(root) or ""
+                    antigravity_chat = harvest_antigravity_transcript() or []
+                    antigravity_text = "\n".join(antigravity_chat)
+                    aider_text = harvest_aider_history(root) or ""
+                    
+                    combined_logs = f"{chat_hist}\n{antigravity_text}\n{aider_text}".lower()
+                    
+                    keywords = [
+                        "credit", "quota", "rate limit", "exhausted", "limit exceeded", 
+                        "overloaded", "429", "insufficient credits", "billing", "token limit"
+                    ]
+                    for kw in keywords:
+                        if kw in combined_logs:
+                            logs_contain_error = True
+                            error_keyword = kw
+                            break
+                            
+                    clean_handoff = False
+                    try:
+                        ho_path = sb_dir / "handoff.md"
+                        if ho_path.exists():
+                            mtime = os.path.getmtime(ho_path)
+                            if time.time() - mtime < 60:
+                                clean_handoff = True
+                    except Exception:
+                        pass
+                        
+                    if not clean_handoff:
+                        print("No clean handoff was registered. Auto-committing and pushing WIP...")
+                        try:
+                            subprocess.check_call(["git", "add", "."], stderr=subprocess.DEVNULL)
+                            
+                            commit_msg = f"WIP: Auto-checkpoint (Agent '{agent_name}' terminated abruptly"
+                            if logs_contain_error:
+                                commit_msg += f" due to '{error_keyword}' error"
+                            commit_msg += ")"
+                            
+                            subprocess.check_call(["git", "commit", "-m", commit_msg], stderr=subprocess.DEVNULL)
+                            
+                            branch = subprocess.check_output(["git", "rev-parse", "--abbrev-ref", "HEAD"], text=True, stderr=subprocess.DEVNULL).strip()
+                            subprocess.check_call(["git", "push", "origin", branch], stderr=subprocess.DEVNULL)
+                            
+                            print(f"Successfully committed and pushed WIP to branch '{branch}'.")
+                            
+                            tc_file = sb_dir / "temp_chat_history.md"
+                            ts = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                            with open(tc_file, "a", encoding="utf-8") as f:
+                                f.write(f"\n- **[{ts}] [Watchdog]**: Auto-committed and pushed WIP changes to GitHub because agent '{agent_name}' exited abruptly without a handoff.\n")
+                                
+                            if logs_contain_error:
+                                db = load_agents_db()
+                                if agent_name in db["agents"]:
+                                    db["agents"][agent_name]["status"] = "Exhausted"
+                                    db["agents"][agent_name]["last_updated"] = ts
+                                    save_agents_db(db)
+                                    print(f"Marked '{agent_name}' as Exhausted in agents.json.")
+                        except Exception as e:
+                            print(f"Error during auto-commit/push: {e}")
+                    else:
+                        print("Clean handoff detected. No auto-commit needed.")
+                else:
+                    print("Workspace is clean. No auto-commit needed.")
+                    
+                try:
+                    pid_file.unlink()
+                except Exception:
+                    pass
+                    
+            time.sleep(check_interval)
+    except KeyboardInterrupt:
+        print("Watchdog daemon stopped by user.")
+    finally:
+        try:
+            lock_file.unlink()
+        except Exception:
+            pass
+
+def start_watchdog_background():
+    root = Path.cwd()
+    script_path = root / ".shared-brain" / "scripts" / "brain.py"
+    try:
+        if os.name == 'nt':
+            subprocess.Popen(
+                [sys.executable, str(script_path), "watchdog"], 
+                creationflags=0x08000000,
+                close_fds=True
+            )
+        else:
+            subprocess.Popen(
+                [sys.executable, str(script_path), "watchdog"], 
+                stdout=subprocess.DEVNULL, 
+                stderr=subprocess.DEVNULL, 
+                start_new_session=True
+            )
+        print("Launched Watchdog background daemon to monitor agent process.")
+    except Exception as e:
+        print(f"Warning: Could not start watchdog daemon: {e}")
+
+def stop_watchdog():
+    root = Path.cwd()
+    lock_file = root / ".shared-brain" / "watchdog.lock"
+    if lock_file.exists():
+        try:
+            with open(lock_file, "r") as f:
+                w_pid = int(f.read().strip())
+            if is_pid_alive(w_pid):
+                if os.name == 'nt':
+                    subprocess.call(["taskkill", "/F", "/PID", str(w_pid)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                else:
+                    os.kill(w_pid, 15)
+                print(f"Stopped Watchdog background daemon (PID {w_pid}).")
+        except Exception:
+            pass
+        try:
+            lock_file.unlink()
+        except Exception:
+            pass
+            
+    pid_file = root / ".shared-brain" / "agent.pid"
+    if pid_file.exists():
+        try:
+            pid_file.unlink()
+        except Exception:
+            pass
+
 def cmd_init():
     print("Initializing Shared Brain configurations...")
     root = Path.cwd()
@@ -481,6 +862,7 @@ Started: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         rc_file.unlink()
         
     print("Task initialized successfully. Ready for coding agents!")
+    start_watchdog_background()
 
 def cmd_resume():
     root = Path.cwd()
@@ -489,12 +871,26 @@ def cmd_resume():
         print("Error: .shared-brain not initialized. Run init first.")
         sys.exit(1)
         
-    # 1. Detect IDE & Agent
     agent, ide = detect_environment()
+    db = load_agents_db()
+    
+    agent_status = "Available"
+    if agent in db.get("agents", {}):
+        agent_status = db["agents"][agent].get("status", "Available")
+        
     print(f"==================================================")
     print(f"RESUMING TASK: Auto-Detected Environment")
     print(f"  Active IDE: {ide}")
-    print(f"  Active Agent: {agent}")
+    print(f"  Active Agent: {agent} (Status: {agent_status})")
+    
+    if agent_status == "Exhausted":
+        print(f"\n  WARNING: The active agent '{agent}' is marked as EXHAUSTED.")
+        available = [name for name, info in db.get("agents", {}).items() if info.get("status") == "Available"]
+        if available:
+            print(f"  RECOMMENDED ALTERNATIVE AGENT(S): {', '.join(available)}")
+        else:
+            print(f"  No alternative agents are currently marked as Available.")
+            
     print(f"==================================================")
     
     # 2. Gather active task
@@ -725,15 +1121,20 @@ Below was the active task state at the time of handoff:
     rc_file = sb_dir / "resume_context.md"
     if rc_file.exists():
         rc_file.unlink()
+        
+    stop_watchdog()
 
 def main():
     if len(sys.argv) < 2:
-        print("Usage: python brain.py [init | start <task> | resume | handoff]")
+        print("Usage: python brain.py [init | start <task> | resume | handoff | agents | register [pid] | watchdog]")
         print("\nCommands:")
         print("  init            Initialize configurations for all supported AI agents")
         print("  start <task>    Initialize a new active task")
         print("  resume          Scan changes & local history to compile context for next agent")
         print("  handoff         Generate a handoff document and archive current state")
+        print("  agents          Display interactive usage menu and agent status")
+        print("  register [pid]  Register the parent shell or agent process PID")
+        print("  watchdog        Start the background monitoring watchdog")
         sys.exit(1)
         
     cmd = sys.argv[1].lower()
@@ -749,6 +1150,13 @@ def main():
         cmd_resume()
     elif cmd == "handoff":
         cmd_handoff()
+    elif cmd == "agents":
+        cmd_agents()
+    elif cmd == "register":
+        pid_val = sys.argv[2] if len(sys.argv) > 2 else None
+        cmd_register(pid_val)
+    elif cmd == "watchdog":
+        cmd_watchdog()
     else:
         print(f"Unknown command: {cmd}")
         sys.exit(1)
