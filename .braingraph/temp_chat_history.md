@@ -1,2 +1,0 @@
-# Sync Chat History
-
