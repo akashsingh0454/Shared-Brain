@@ -573,75 +573,323 @@ def cmd_register(pid_str=None, agent_name=None):
     print(f"Registered active agent '{agent_name}' (PID {pid}).")
 
 # Graphify integration code
-def load_code_graph(root_dir):
-    graph_path = os.path.join(root_dir, "graphify-out", "graph.json")
-    if not os.path.exists(graph_path):
-        graphify_installed = False
-        try:
-            if os.name == 'nt':
-                subprocess.check_call(["where", "graphify"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            else:
-                subprocess.check_call(["which", "graphify"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            graphify_installed = True
-        except Exception:
-            pass
+import ast
+
+class PythonDependencyVisitor(ast.NodeVisitor):
+    def __init__(self, filepath, rel_path):
+        self.filepath = filepath
+        self.rel_path = rel_path
+        self.current_class = None
+        self.current_function = None
+        self.local_scope = {}
+        self.definitions = {}
+        self.calls = {}
+        
+    def get_current_symbol_id(self):
+        parts = [self.rel_path]
+        if self.current_class:
+            parts.append(self.current_class)
+        if self.current_function:
+            parts.append(self.current_function)
+        return "::".join(parts)
+        
+    def visit_Import(self, node):
+        for alias in node.names:
+            name = alias.name
+            asname = alias.asname or name
+            self.local_scope[asname] = ("module", name)
+        self.generic_visit(node)
+        
+    def visit_ImportFrom(self, node):
+        module = node.module or ""
+        for alias in node.names:
+            name = alias.name
+            asname = alias.asname or name
+            self.local_scope[asname] = ("from_module", module, name)
+        self.generic_visit(node)
+        
+    def visit_ClassDef(self, node):
+        old_class = self.current_class
+        self.current_class = node.name
+        
+        class_symbol = self.get_current_symbol_id()
+        self.definitions[class_symbol] = {
+            "type": "class",
+            "label": node.name,
+            "file": self.rel_path
+        }
+        
+        self.generic_visit(node)
+        self.current_class = old_class
+        
+    def visit_FunctionDef(self, node):
+        old_func = self.current_function
+        self.current_function = node.name
+        
+        func_symbol = self.get_current_symbol_id()
+        self.definitions[func_symbol] = {
+            "type": "function",
+            "label": node.name,
+            "file": self.rel_path
+        }
+        
+        self.generic_visit(node)
+        self.current_function = old_func
+        
+    def visit_AsyncFunctionDef(self, node):
+        self.visit_FunctionDef(node)
+        
+    def visit_Call(self, node):
+        caller_sym = self.get_current_symbol_id()
+        self.calls.setdefault(caller_sym, [])
+        
+        if isinstance(node.func, ast.Name):
+            callee_name = node.func.id
+            self.calls[caller_sym].append(callee_name)
+        elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name):
+            obj_name = node.func.value.id
+            attr_name = node.func.attr
+            self.calls[caller_sym].append(f"{obj_name}.{attr_name}")
             
-        if graphify_installed:
-            print("\n[BrainGraph] graphify-out/graph.json not found, but 'graphify' CLI is installed.")
-            print("[BrainGraph] Auto-bootstrapping local AST-only code graph index (running 'graphify extract . --no-cluster')...")
-            try:
-                subprocess.check_call(["graphify", "extract", ".", "--no-cluster"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-                print("[BrainGraph] Successfully initialized local AST code graph.")
-            except Exception as e:
-                print(f"[BrainGraph] Warning: Failed to auto-bootstrap code graph: {e}")
-        else:
-            print("\n[BrainGraph] Note: Graphify is not installed, downstream dependency mapping is skipped.")
-            print("             To enable, install Graphify and run 'graphify extract'.")
-            
-    if not os.path.exists(graph_path):
+        self.generic_visit(node)
+
+def parse_python_project(root_dir):
+    root_path = Path(root_dir)
+    visitors = []
+    
+    ignore_dirs = {
+        '.git', 'node_modules', '.braingraph', 'venv', '.env', 'dist', 'build', 
+        '.next', '.venv', '.nuxt', 'target', 'bin', 'obj', '__pycache__', '.agents'
+    }
+    
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        dirnames[:] = [d for d in dirnames if d not in ignore_dirs and not d.startswith('.')]
+        
+        for f in filenames:
+            if f.endswith('.py') and f != "braingraph.py":
+                filepath = os.path.join(dirpath, f)
+                rel_path = os.path.relpath(filepath, root_dir).replace('\\', '/')
+                try:
+                    with open(filepath, 'r', encoding='utf-8', errors='ignore') as file_obj:
+                        code = file_obj.read()
+                    tree = ast.parse(code, filename=filepath)
+                    visitor = PythonDependencyVisitor(filepath, rel_path)
+                    visitor.visit(tree)
+                    visitors.append(visitor)
+                except Exception:
+                    pass
+                    
+    all_definitions = {}
+    for visitor in visitors:
+        all_definitions.update(visitor.definitions)
+        
+    for visitor in visitors:
+        all_definitions[visitor.rel_path] = {
+            "type": "file",
+            "label": os.path.basename(visitor.rel_path),
+            "file": visitor.rel_path
+        }
+        
+    def resolve_module_file(module_name):
+        p = module_name.replace('.', '/')
+        options = [f"{p}.py", f"{p}/__init__.py"]
+        for opt in options:
+            if (root_path / opt).exists():
+                return opt
         return None
         
-    try:
-        with open(graph_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-            
-        nodes = {}
-        raw_nodes = data.get("nodes", [])
-        if isinstance(raw_nodes, list):
-            for n in raw_nodes:
-                nid = n.get("id") or n.get("name")
-                if nid:
-                    nodes[nid] = n
-        elif isinstance(raw_nodes, dict):
-            nodes = raw_nodes
-            
-        edges = data.get("edges", [])
-        
-        file_to_nodes = {}
-        parents = {}
-        
-        for nid, val in nodes.items():
-            filepath = val.get("file") or val.get("path")
-            if filepath:
-                filepath = os.path.relpath(filepath, root_dir).replace('\\', '/')
-                file_to_nodes.setdefault(filepath, []).append(nid)
+    resolved_edges = []
+    
+    for visitor in visitors:
+        for caller, callees in visitor.calls.items():
+            for callee in callees:
+                target_sym = None
                 
-        for edge in edges:
-            src = edge.get("source")
-            tgt = edge.get("target")
-            relation = edge.get("relation") or ""
-            
-            if src and tgt:
-                parents.setdefault(tgt, []).append((src, relation))
+                if '.' not in callee:
+                    if callee in visitor.local_scope:
+                        scope_info = visitor.local_scope[callee]
+                        if scope_info[0] == "from_module":
+                            _, mod_name, sym_name = scope_info
+                            mod_file = resolve_module_file(mod_name)
+                            if mod_file:
+                                target_sym = f"{mod_file}::{sym_name}"
+                                if target_sym not in all_definitions:
+                                    matching_syms = [s for s in all_definitions if s.startswith(f"{mod_file}::") and s.endswith(f"::{sym_name}")]
+                                    if matching_syms:
+                                        target_sym = matching_syms[0]
+                                    else:
+                                        target_sym = mod_file
+                    else:
+                        local_target = f"{visitor.rel_path}::{callee}"
+                        if local_target in all_definitions:
+                            target_sym = local_target
+                        else:
+                            matching_syms = [s for s in all_definitions if s.startswith(f"{visitor.rel_path}::") and s.endswith(f"::{callee}")]
+                            if matching_syms:
+                                target_sym = matching_syms[0]
+                else:
+                    parts = callee.split('.', 1)
+                    obj_name = parts[0]
+                    attr_name = parts[1]
+                    
+                    if obj_name in visitor.local_scope:
+                        scope_info = visitor.local_scope[obj_name]
+                        if scope_info[0] == "module":
+                            mod_name = scope_info[1]
+                            mod_file = resolve_module_file(mod_name)
+                            if mod_file:
+                                target_sym = f"{mod_file}::{attr_name}"
+                                if target_sym not in all_definitions:
+                                    matching_syms = [s for s in all_definitions if s.startswith(f"{mod_file}::") and s.endswith(f"::{attr_name}")]
+                                    if matching_syms:
+                                        target_sym = matching_syms[0]
+                                    else:
+                                        target_sym = mod_file
+                                        
+                if target_sym and target_sym in all_definitions:
+                    resolved_edges.append({
+                        "source": caller,
+                        "target": target_sym,
+                        "relation": "calls"
+                    })
+                    
+    return all_definitions, resolved_edges
+
+def parse_non_python_project(root_dir):
+    js_extensions = ('.js', '.ts', '.jsx', '.tsx', '.go', '.rs', '.cpp', '.h', '.java')
+    all_definitions = {}
+    edges = []
+    
+    ignore_dirs = {
+        '.git', 'node_modules', '.braingraph', 'venv', '.env', 'dist', 'build', 
+        '.next', '.venv', '.nuxt', 'target', 'bin', 'obj', '__pycache__', '.agents'
+    }
+    
+    func_pattern = re.compile(r'(?:function\s+([a-zA-Z0-9_$]+)|(?:const|let|var)\s+([a-zA-Z0-9_$]+)\s*=\s*(?:\([^)]*\)|[a-zA-Z0-9_$]+)\s*=>)')
+    class_pattern = re.compile(r'class\s+([a-zA-Z0-9_$]+)')
+    import_pattern = re.compile(r'(?:import\s+.*?\s+from\s+[\'"]([^\'"]+)[\'"]|require\(\s*[\'"]([^\'"]+)[\'"]\s*\))')
+    
+    for dirpath, dirnames, filenames in os.walk(root_dir):
+        dirnames[:] = [d for d in dirnames if d not in ignore_dirs and not d.startswith('.')]
+        
+        for f in filenames:
+            if f.endswith(js_extensions):
+                filepath = os.path.join(dirpath, f)
+                rel_path = os.path.relpath(filepath, root_dir).replace('\\', '/')
                 
-        return {
-            "nodes": nodes,
-            "file_to_nodes": file_to_nodes,
-            "parents": parents
-        }
-    except Exception as e:
-        print(f"Warning: Could not parse Graphify JSON: {e}")
-    return None
+                file_sym = rel_path
+                all_definitions[file_sym] = {
+                    "type": "file",
+                    "label": f,
+                    "file": rel_path
+                }
+                
+                try:
+                    with open(filepath, 'r', encoding='utf-8', errors='ignore') as file_obj:
+                        file_content = file_obj.read()
+                    
+                    local_definitions = []
+                    
+                    for match in func_pattern.finditer(file_content):
+                        name = match.group(1) or match.group(2)
+                        if name:
+                            sym = f"{rel_path}::{name}"
+                            all_definitions[sym] = {
+                                "type": "function",
+                                "label": name,
+                                "file": rel_path
+                            }
+                            local_definitions.append(sym)
+                            
+                    for match in class_pattern.finditer(file_content):
+                        name = match.group(1)
+                        if name:
+                            sym = f"{rel_path}::{name}"
+                            all_definitions[sym] = {
+                                "type": "class",
+                                "label": name,
+                                "file": rel_path
+                            }
+                            local_definitions.append(sym)
+                            
+                    imported_files = []
+                    for match in import_pattern.finditer(file_content):
+                        imp_path = match.group(1) or match.group(2)
+                        if imp_path:
+                            curr_dir = os.path.dirname(rel_path)
+                            resolved_rel = os.path.normpath(os.path.join(curr_dir, imp_path)).replace('\\', '/')
+                            
+                            possible_files = [
+                                resolved_rel,
+                                f"{resolved_rel}.ts",
+                                f"{resolved_rel}.tsx",
+                                f"{resolved_rel}.js",
+                                f"{resolved_rel}.jsx",
+                                f"{resolved_rel}/index.ts",
+                                f"{resolved_rel}/index.js",
+                            ]
+                            for p_file in possible_files:
+                                if os.path.exists(os.path.join(root_dir, p_file)):
+                                    imported_files.append(p_file)
+                                    break
+                                    
+                    for imp_file in imported_files:
+                        edges.append({
+                            "source": file_sym,
+                            "target": imp_file,
+                            "relation": "imports"
+                        })
+                        for loc_sym in local_definitions:
+                            edges.append({
+                                "source": loc_sym,
+                                "target": imp_file,
+                                "relation": "depends_on"
+                            })
+                except Exception:
+                    pass
+                    
+    return all_definitions, edges
+
+def load_code_graph(root_dir):
+    print("[BrainGraph] Indexing codebase and generating dependency map...")
+    t0 = datetime.datetime.now()
+    
+    py_defs, py_edges = parse_python_project(root_dir)
+    non_py_defs, non_py_edges = parse_non_python_project(root_dir)
+    
+    nodes = {}
+    nodes.update(py_defs)
+    nodes.update(non_py_defs)
+    
+    edges = []
+    edges.extend(py_edges)
+    edges.extend(non_py_edges)
+    
+    file_to_nodes = {}
+    parents = {}
+    
+    for nid, val in nodes.items():
+        filepath = val.get("file")
+        if filepath:
+            file_to_nodes.setdefault(filepath, []).append(nid)
+            
+    for edge in edges:
+        src = edge.get("source")
+        tgt = edge.get("target")
+        relation = edge.get("relation") or ""
+        
+        if src and tgt:
+            parents.setdefault(tgt, []).append((src, relation))
+            
+    t1 = datetime.datetime.now()
+    elapsed = (t1 - t0).total_seconds()
+    print(f"[BrainGraph] Successfully built local AST code graph in {elapsed:.3f} seconds ({len(nodes)} nodes, {len(edges)} edges).")
+    
+    return {
+        "nodes": nodes,
+        "file_to_nodes": file_to_nodes,
+        "parents": parents
+    }
 
 def analyze_downstream_impact(graph, modified_files, max_depth=2):
     if not graph:
