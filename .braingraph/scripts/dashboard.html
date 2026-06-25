@@ -450,42 +450,87 @@
             }
         }
 
+        function escapeHTML(str) {
+            if (!str) return "";
+            return str.replace(/[&<>'"]/g, 
+                tag => ({
+                    '&': '&amp;',
+                    '<': '&lt;',
+                    '>': '&gt;',
+                    "'": '&#39;',
+                    '"': '&quot;'
+                }[tag] || tag)
+            );
+        }
+
         function updateWorkspaceChanges(staged, unstaged, untracked) {
             const container = document.getElementById('workspace-container');
-            let content = '';
-
+            container.innerHTML = ''; // Safe clear
+            
             const hasChanges = (staged && staged.length) || (unstaged && unstaged.length) || (untracked && untracked.length);
 
             if (!hasChanges) {
-                container.innerHTML = `<p style="color: var(--text-muted); font-style: italic;">Workspace is clean. No modifications detected.</p>`;
+                const p = document.createElement('p');
+                p.style.color = 'var(--text-muted)';
+                p.style.fontStyle = 'italic';
+                p.textContent = 'Workspace is clean. No modifications detected.';
+                container.appendChild(p);
                 return;
             }
 
-            content += '<div class="file-list">';
+            const fileList = document.createElement('div');
+            fileList.className = 'file-list';
+
             if (staged) {
                 staged.forEach(f => {
-                    content += `<div class="file-item"><span>${f[1]}</span><span class="file-badge staged">Staged [${f[0]}]</span></div>`;
+                    const item = document.createElement('div');
+                    item.className = 'file-item';
+                    const spanName = document.createElement('span');
+                    spanName.textContent = f[1];
+                    const spanBadge = document.createElement('span');
+                    spanBadge.className = 'file-badge staged';
+                    spanBadge.textContent = `Staged [${f[0]}]`;
+                    item.appendChild(spanName);
+                    item.appendChild(spanBadge);
+                    fileList.appendChild(item);
                 });
             }
             if (unstaged) {
                 unstaged.forEach(f => {
-                    content += `<div class="file-item"><span>${f[1]}</span><span class="file-badge unstaged">Unstaged [${f[0]}]</span></div>`;
+                    const item = document.createElement('div');
+                    item.className = 'file-item';
+                    const spanName = document.createElement('span');
+                    spanName.textContent = f[1];
+                    const spanBadge = document.createElement('span');
+                    spanBadge.className = 'file-badge unstaged';
+                    spanBadge.textContent = `Unstaged [${f[0]}]`;
+                    item.appendChild(spanName);
+                    item.appendChild(spanBadge);
+                    fileList.appendChild(item);
                 });
             }
             if (untracked) {
                 untracked.forEach(f => {
-                    content += `<div class="file-item"><span>${f}</span><span class="file-badge untracked">Untracked</span></div>`;
+                    const item = document.createElement('div');
+                    item.className = 'file-item';
+                    const spanName = document.createElement('span');
+                    spanName.textContent = f;
+                    const spanBadge = document.createElement('span');
+                    spanBadge.className = 'file-badge untracked';
+                    spanBadge.textContent = 'Untracked';
+                    item.appendChild(spanName);
+                    item.appendChild(spanBadge);
+                    fileList.appendChild(item);
                 });
             }
-            content += '</div>';
-            container.innerHTML = content;
+            container.appendChild(fileList);
         }
 
         function updateAgents(agents, usage) {
             const container = document.getElementById('agents-container');
             if (!agents) return;
+            container.innerHTML = ''; // Safe clear
 
-            let html = '';
             const sortedNames = Object.keys(agents).sort();
 
             sortedNames.forEach(name => {
@@ -500,28 +545,67 @@
                 const cardClass = status.toLowerCase();
                 const isChecked = status === 'Available' || status === 'Active';
 
-                html += `
-                    <div class="agent-card ${cardClass}">
-                        <div class="agent-header">
-                            <span class="agent-name">${name}</span>
-                            <span class="agent-badge ${cardClass}">${status}</span>
-                        </div>
-                        <div class="agent-info">
-                            <p><strong>Usage:</strong> ${currentUsage}${limitStr}</p>
-                            <p><strong>Quota:</strong> ${limitType}</p>
-                        </div>
-                        <div class="agent-actions">
-                            <span style="font-size: 0.85rem; color: var(--text-muted);">Available</span>
-                            <label class="switch">
-                                <input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleAgent('${name}', '${status}')">
-                                <span class="slider"></span>
-                            </label>
-                        </div>
-                    </div>
-                `;
-            });
+                const card = document.createElement('div');
+                card.className = `agent-card ${cardClass}`;
 
-            container.innerHTML = html;
+                // Header
+                const header = document.createElement('div');
+                header.className = 'agent-header';
+                
+                const agentNameSpan = document.createElement('span');
+                agentNameSpan.className = 'agent-name';
+                agentNameSpan.textContent = name;
+                
+                const statusBadge = document.createElement('span');
+                statusBadge.className = `agent-badge ${cardClass}`;
+                statusBadge.textContent = status;
+                
+                header.appendChild(agentNameSpan);
+                header.appendChild(statusBadge);
+                card.appendChild(header);
+
+                // Info
+                const infoDiv = document.createElement('div');
+                infoDiv.className = 'agent-info';
+                
+                const pUsage = document.createElement('p');
+                pUsage.innerHTML = `<strong>Usage:</strong> ${currentUsage}${limitStr}`;
+                
+                const pQuota = document.createElement('p');
+                pQuota.innerHTML = `<strong>Quota:</strong> ${escapeHTML(limitType)}`;
+                
+                infoDiv.appendChild(pUsage);
+                infoDiv.appendChild(pQuota);
+                card.appendChild(infoDiv);
+
+                // Actions
+                const actions = document.createElement('div');
+                actions.className = 'agent-actions';
+                
+                const spanText = document.createElement('span');
+                spanText.style.fontSize = '0.85rem';
+                spanText.style.color = 'var(--text-muted)';
+                spanText.textContent = 'Available';
+                
+                const label = document.createElement('label');
+                label.className = 'switch';
+                
+                const checkbox = document.createElement('input');
+                checkbox.type = 'checkbox';
+                if (isChecked) checkbox.checked = true;
+                checkbox.onchange = () => toggleAgent(name, status);
+                
+                const slider = document.createElement('span');
+                slider.className = 'slider';
+                
+                label.appendChild(checkbox);
+                label.appendChild(slider);
+                actions.appendChild(spanText);
+                actions.appendChild(label);
+                card.appendChild(actions);
+
+                container.appendChild(card);
+            });
         }
 
         function updateDependencyGraph(mermaidCode) {
