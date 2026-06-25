@@ -362,13 +362,66 @@
             color: var(--text-muted);
             font-style: italic;
         }
+
+        /* Project Select Dropdown styling */
+        .project-select-container {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-right: auto;
+            margin-left: 2.5rem;
+        }
+
+        .project-select-label {
+            font-size: 0.875rem;
+            color: var(--text-muted);
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        .project-select {
+            background: rgba(255, 255, 255, 0.04);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            color: var(--text-main);
+            padding: 0.5rem 2.25rem 0.5rem 1rem;
+            border-radius: 8px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
+            font-family: 'Outfit', sans-serif;
+            font-weight: 500;
+            appearance: none;
+            -webkit-appearance: none;
+            background-image: url("data:image/svg+xml;utf8,<svg fill='white' height='24' viewBox='0 0 24 24' width='24' xmlns='http://www.w3.org/2000/svg'><path d='M7 10l5 5 5-5z'/><path d='M0 0h24v24H0z' fill='none'/></svg>");
+            background-repeat: no-repeat;
+            background-position: right 0.75rem center;
+            background-size: 1.1rem;
+        }
+
+        .project-select:hover {
+            background-color: rgba(255, 255, 255, 0.08);
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 10px rgba(59, 130, 246, 0.2);
+        }
+
+        .project-select:focus {
+            outline: none;
+            border-color: var(--accent-primary);
+            box-shadow: 0 0 12px rgba(59, 130, 246, 0.3);
+        }
+
+        .project-select option {
+            background: #0b0f19;
+            color: var(--text-main);
+        }
     </style>
 </head>
 <body>
     <div class="container">
         <header>
-            <h1>
-                <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: middle;">
+            <h1 style="font-size: 1.8rem;">
+                <svg width="28" height="28" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg" style="vertical-align: middle;">
                     <path d="M16 2C8.268 2 2 8.268 2 16C2 23.732 8.268 30 16 30C23.732 30 30 23.732 30 16C30 8.268 23.732 2 16 2ZM18 24H14V20H18V24ZM18 18H14V8H18V18Z" fill="url(#paint0_linear)"/>
                     <defs>
                         <linearGradient id="paint0_linear" x1="2" y1="2" x2="30" y2="30" gradientUnits="userSpaceOnUse">
@@ -377,8 +430,14 @@
                         </linearGradient>
                     </defs>
                 </svg>
-                BrainGraph Control Panel
+                BrainGraph
             </h1>
+            <div class="project-select-container">
+                <span class="project-select-label">Workspace:</span>
+                <select id="project-dropdown" class="project-select" onchange="onProjectChanged()">
+                    <option value="">Loading workspaces...</option>
+                </select>
+            </div>
             <div class="status-badge">
                 <span class="status-indicator"></span>
                 <span>Watchdog Running</span>
@@ -386,6 +445,20 @@
         </header>
 
         <main class="dashboard-grid">
+            <!-- BrainGraph Not Initialized Alert Card -->
+            <section id="init-card" class="card col-12" style="display: none; background: linear-gradient(135deg, rgba(245, 158, 11, 0.08), rgba(239, 68, 68, 0.04)); border-color: rgba(245, 158, 11, 0.25);">
+                <h2 class="card-title" style="color: var(--accent-amber); border-bottom-color: rgba(245, 158, 11, 0.15); margin-bottom: 1rem;">⚠️ BrainGraph Workspace Not Initialized</h2>
+                <div style="line-height: 1.6;">
+                    <p style="margin-bottom: 1.25rem; font-size: 1rem;">
+                        BrainGraph is not yet initialized for project <strong id="init-project-name" style="color: #fff;"></strong> at path <code id="init-project-path" style="background: rgba(0,0,0,0.3); padding: 0.2rem 0.4rem; border-radius: 4px; font-family: monospace; font-size: 0.9rem;"></code>.
+                        Initialize it to generate agent rules files (such as <code>CLAUDE.md</code>, <code>AGENTS.md</code>) and enable active task tracking, recent file analysis, and callflow dependency mapping.
+                    </p>
+                    <button class="btn" onclick="initProject()" style="background: var(--accent-amber); border-color: var(--accent-amber); color: #0b0f19; font-weight: 600; padding: 0.6rem 1.25rem;">
+                        Initialize BrainGraph
+                    </button>
+                </div>
+            </section>
+
             <!-- Active Task Details -->
             <section class="card col-8">
                 <h2 class="card-title">Active Task Details</h2>
@@ -425,12 +498,87 @@
 
     <script>
         let lastMermaidText = "";
+        let activeProjectPath = "";
+        let projectsList = [];
 
-        async function fetchStatus() {
+        async function fetchProjects() {
             try {
-                const response = await fetch('/api/status');
+                const response = await fetch('/api/projects');
                 if (!response.ok) throw new Error('API server unreachable');
                 const data = await response.json();
+                projectsList = data.projects || [];
+                
+                const dropdown = document.getElementById('project-dropdown');
+                dropdown.innerHTML = '';
+                
+                if (projectsList.length === 0) {
+                    const opt = document.createElement('option');
+                    opt.value = "";
+                    opt.textContent = "No projects found";
+                    dropdown.appendChild(opt);
+                    activeProjectPath = "";
+                    updateUIForNoProjects();
+                    return;
+                }
+                
+                let savedProj = localStorage.getItem('selectedProject');
+                // Verify saved project exists in list
+                let exists = projectsList.some(p => p.path === savedProj);
+                if (!exists) {
+                    savedProj = projectsList[0].path;
+                }
+                
+                activeProjectPath = savedProj;
+                localStorage.setItem('selectedProject', activeProjectPath);
+                
+                projectsList.forEach(p => {
+                    const opt = document.createElement('option');
+                    opt.value = p.path;
+                    opt.textContent = `${p.name} (${p.has_braingraph ? 'Active' : 'Uninitialized'})`;
+                    if (p.path === activeProjectPath) {
+                        opt.selected = true;
+                    }
+                    dropdown.appendChild(opt);
+                });
+                
+                fetchStatus();
+            } catch (err) {
+                console.error("Projects fetch failed:", err);
+            }
+        }
+
+        function onProjectChanged() {
+            const dropdown = document.getElementById('project-dropdown');
+            activeProjectPath = dropdown.value;
+            localStorage.setItem('selectedProject', activeProjectPath);
+            lastMermaidText = ""; // Reset graph comparison to force re-render
+            fetchStatus();
+        }
+
+        async function fetchStatus() {
+            if (!activeProjectPath) return;
+            try {
+                const url = `/api/status?project=${encodeURIComponent(activeProjectPath)}`;
+                const response = await fetch(url);
+                if (!response.ok) throw new Error('API server unreachable');
+                const data = await response.json();
+                
+                const initCard = document.getElementById('init-card');
+                const selectedProj = projectsList.find(p => p.path === activeProjectPath);
+                
+                if (!data.has_braingraph) {
+                    if (selectedProj) {
+                        selectedProj.has_braingraph = false;
+                    }
+                    initCard.style.display = 'block';
+                    document.getElementById('init-project-name').textContent = selectedProj ? selectedProj.name : 'Unknown';
+                    document.getElementById('init-project-path').textContent = activeProjectPath;
+                } else {
+                    if (selectedProj) {
+                        selectedProj.has_braingraph = true;
+                    }
+                    initCard.style.display = 'none';
+                }
                 
                 updateActiveTask(data.active_task_html);
                 updateWorkspaceChanges(data.staged, data.unstaged, data.untracked);
@@ -443,11 +591,65 @@
 
         function updateActiveTask(html) {
             const container = document.getElementById('active-task-container');
+            container.innerHTML = ''; // Safe clear
             if (html && html.trim()) {
-                container.innerHTML = html;
+                const parsed = sanitizeHTML(html);
+                container.appendChild(parsed);
             } else {
-                container.innerHTML = `<p style="color: var(--text-muted); font-style: italic;">No active task loaded.</p>`;
+                const p = document.createElement('p');
+                p.style.color = 'var(--text-muted)';
+                p.style.fontStyle = 'italic';
+                p.textContent = 'No active task loaded.';
+                container.appendChild(p);
             }
+        }
+
+        function sanitizeHTML(html) {
+            if (!html) return document.createDocumentFragment();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, 'text/html');
+            
+            function cleanNode(node) {
+                const allowedTags = ['H1', 'H2', 'H3', 'UL', 'LI', 'INPUT', 'SPAN', 'P', 'STRONG', 'CODE', 'EM', 'DIV', 'BR'];
+                const allowedAttrs = ['type', 'checked', 'disabled', 'style', 'class', 'id'];
+                
+                if (node.nodeType === Node.TEXT_NODE) {
+                    return node.cloneNode(true);
+                }
+                
+                if (node.nodeType === Node.ELEMENT_NODE && allowedTags.includes(node.tagName)) {
+                    const cleanEl = document.createElement(node.tagName);
+                    
+                    for (let i = 0; i < node.attributes.length; i++) {
+                        const attr = node.attributes[i];
+                        if (allowedAttrs.includes(attr.name.toLowerCase())) {
+                            cleanEl.setAttribute(attr.name, attr.value);
+                        }
+                    }
+                    
+                    for (let i = 0; i < node.childNodes.length; i++) {
+                        const cleanChild = cleanNode(node.childNodes[i]);
+                        if (cleanChild) {
+                            cleanEl.appendChild(cleanChild);
+                        }
+                    }
+                    return cleanEl;
+                }
+                
+                const frag = document.createDocumentFragment();
+                for (let i = 0; i < node.childNodes.length; i++) {
+                    const cleanChild = cleanNode(node.childNodes[i]);
+                    if (cleanChild) {
+                        frag.appendChild(cleanChild);
+                    }
+                }
+                return frag;
+            }
+            
+            const frag = document.createDocumentFragment();
+            const cleanBody = cleanNode(doc.body);
+            frag.appendChild(cleanBody);
+            return frag;
         }
 
         function escapeHTML(str) {
@@ -569,10 +771,16 @@
                 infoDiv.className = 'agent-info';
                 
                 const pUsage = document.createElement('p');
-                pUsage.innerHTML = `<strong>Usage:</strong> ${currentUsage}${limitStr}`;
+                const strongUsage = document.createElement('strong');
+                strongUsage.textContent = 'Usage: ';
+                pUsage.appendChild(strongUsage);
+                pUsage.appendChild(document.createTextNode(`${currentUsage}${limitStr}`));
                 
                 const pQuota = document.createElement('p');
-                pQuota.innerHTML = `<strong>Quota:</strong> ${escapeHTML(limitType)}`;
+                const strongQuota = document.createElement('strong');
+                strongQuota.textContent = 'Quota: ';
+                pQuota.appendChild(strongQuota);
+                pQuota.appendChild(document.createTextNode(limitType));
                 
                 infoDiv.appendChild(pUsage);
                 infoDiv.appendChild(pQuota);
@@ -611,7 +819,11 @@
         function updateDependencyGraph(mermaidCode) {
             const container = document.getElementById('mermaid-root');
             if (!mermaidCode || !mermaidCode.trim()) {
-                container.innerHTML = `<p class="mermaid-empty">No downstream callflow dependencies mapped. Edit a file to generate a map.</p>`;
+                container.innerHTML = '';
+                const p = document.createElement('p');
+                p.className = 'mermaid-empty';
+                p.textContent = 'No downstream callflow dependencies mapped. Edit a file to generate a map.';
+                container.appendChild(p);
                 lastMermaidText = "";
                 return;
             }
@@ -631,26 +843,41 @@
             cleanCode = cleanCode.trim();
 
             const uniqueId = 'mermaid-svg-' + Math.floor(Math.random() * 1000000);
-            container.innerHTML = `<div id="${uniqueId}" class="mermaid">${cleanCode}</div>`;
+            container.innerHTML = '';
+            const mermaidDiv = document.createElement('div');
+            mermaidDiv.id = uniqueId;
+            mermaidDiv.className = 'mermaid';
+            mermaidDiv.textContent = cleanCode;
+            container.appendChild(mermaidDiv);
             
             try {
                 mermaid.render(uniqueId + '-render', cleanCode).then(({ svg }) => {
                     const el = document.getElementById(uniqueId);
-                    if (el) el.innerHTML = svg;
+                    if (el) {
+                        el.innerHTML = '';
+                        el.innerHTML = svg;
+                    }
                 });
             } catch (err) {
                 console.error("Mermaid render error:", err);
-                container.innerHTML = `<p class="mermaid-empty" style="color: var(--accent-red);">Failed to render dependency map. Check syntax.</p>`;
+                container.innerHTML = '';
+                const p = document.createElement('p');
+                p.className = 'mermaid-empty';
+                p.style.color = 'var(--accent-red)';
+                p.textContent = 'Failed to render dependency map. Check syntax.';
+                container.appendChild(p);
             }
         }
 
         async function toggleAgent(name, currentStatus) {
             try {
                 const newStatus = (currentStatus === 'Available' || currentStatus === 'Active') ? 'Exhausted' : 'Available';
+                const body = { name, status: newStatus };
+                if (activeProjectPath) body.project = activeProjectPath;
                 const response = await fetch('/api/toggle_agent', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name, status: newStatus })
+                    body: JSON.stringify(body)
                 });
                 if (response.ok) fetchStatus();
             } catch (err) {
@@ -660,16 +887,76 @@
 
         async function resetOffsets() {
             try {
-                const response = await fetch('/api/reset_offsets', { method: 'POST' });
+                const body = {};
+                if (activeProjectPath) body.project = activeProjectPath;
+                const response = await fetch('/api/reset_offsets', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
                 if (response.ok) fetchStatus();
             } catch (err) {
                 console.error("Failed to reset offsets:", err);
             }
         }
 
+        async function initProject() {
+            if (!activeProjectPath) return;
+            const btn = document.querySelector('#init-card button');
+            const oldText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = 'Initializing...';
+            try {
+                const response = await fetch('/api/init_project', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ project: activeProjectPath })
+                });
+                if (response.ok) {
+                    btn.textContent = 'Successfully Initialized!';
+                    setTimeout(() => {
+                        fetchProjects();
+                    }, 1500);
+                } else {
+                    const errData = await response.json();
+                    alert("Failed to initialize: " + (errData.error || response.statusText));
+                    btn.disabled = false;
+                    btn.textContent = oldText;
+                }
+            } catch (err) {
+                console.error("Init project failed:", err);
+                alert("Failed to initialize project: " + err.message);
+                btn.disabled = false;
+                btn.textContent = oldText;
+            }
+        }
+
+        function updateUIForNoProjects() {
+            const taskContainer = document.getElementById('active-task-container');
+            taskContainer.innerHTML = '';
+            const p = document.createElement('p');
+            p.style.color = 'var(--text-muted)';
+            p.style.fontStyle = 'italic';
+            p.textContent = 'No projects discovered. Start server in a directory with a git repository or run "init" to start.';
+            taskContainer.appendChild(p);
+
+            document.getElementById('workspace-container').innerHTML = '';
+            document.getElementById('agents-container').innerHTML = '';
+            
+            const mermaidRoot = document.getElementById('mermaid-root');
+            mermaidRoot.innerHTML = '';
+            const pMermaid = document.createElement('p');
+            pMermaid.className = 'mermaid-empty';
+            pMermaid.textContent = 'No workspace active.';
+            mermaidRoot.appendChild(pMermaid);
+
+            document.getElementById('init-card').style.display = 'none';
+        }
+
         // Initialize and poll every 3 seconds
-        fetchStatus();
+        fetchProjects();
         setInterval(fetchStatus, 3000);
     </script>
 </body>
 </html>
+

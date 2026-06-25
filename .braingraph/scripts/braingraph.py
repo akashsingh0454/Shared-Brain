@@ -5,6 +5,7 @@ import datetime
 import subprocess
 import re
 from pathlib import Path
+import urllib.parse
 
 # Config templates
 RULES_TEMPLATES = {
@@ -150,6 +151,21 @@ When you are finishing or if your limits are running low:
 """
 }
 
+def resolve_safe_project_path(project_path):
+    server_root = Path.cwd().resolve()
+    if not project_path:
+        return server_root
+    try:
+        # Check against whitelisted discovered projects list
+        allowed_projects = discover_projects()
+        resolved = str(Path(project_path).resolve()).replace('\\', '/')
+        for p in allowed_projects:
+            if p["path"] == resolved:
+                return Path(p["path"])
+    except Exception:
+        pass
+    return server_root
+
 def get_parent_process_cmd():
     ppid = os.getppid()
     if os.name == 'nt':
@@ -253,12 +269,13 @@ def scan_recent_files(root_dir, max_hours=4):
     recent_files.sort(key=lambda x: x[1], reverse=True)
     return recent_files
 
-def scan_git_status():
+def scan_git_status(root_dir=None):
     staged = []
     unstaged = []
     untracked = []
+    cwd_path = str(root_dir) if root_dir else None
     try:
-        res = subprocess.check_output(["git", "status", "--porcelain"], text=True, stderr=subprocess.DEVNULL)
+        res = subprocess.check_output(["git", "status", "--porcelain"], cwd=cwd_path, text=True, stderr=subprocess.DEVNULL)
         for line in res.split('\n'):
             if not line.strip():
                 continue
@@ -281,33 +298,32 @@ def scan_git_status():
         pass
     return staged, unstaged, untracked
 
-def get_git_diff():
+def get_git_diff(root_dir=None):
+    cwd_path = str(root_dir) if root_dir else None
     try:
-        diff = subprocess.check_output(["git", "diff", "--", ":!.braingraph"], text=True, stderr=subprocess.DEVNULL)
+        diff = subprocess.check_output(["git", "diff", "--", ":!.braingraph"], cwd=cwd_path, text=True, stderr=subprocess.DEVNULL)
         return diff
     except Exception:
         return ""
 
-def get_last_commit_wip():
+def get_last_commit_wip(root_dir=None):
+    cwd_path = str(root_dir) if root_dir else None
     try:
-        msg = subprocess.check_output(["git", "log", "-1", "--pretty=%s"], text=True, stderr=subprocess.DEVNULL).strip()
+        msg = subprocess.check_output(["git", "log", "-1", "--pretty=%s"], cwd=cwd_path, text=True, stderr=subprocess.DEVNULL).strip()
         if "wip" in msg.lower():
-            diff = subprocess.check_output(["git", "diff", "HEAD~1", "HEAD", "--", ":!.braingraph"], text=True, stderr=subprocess.DEVNULL)
+            diff = subprocess.check_output(["git", "diff", "HEAD~1", "HEAD", "--", ":!.braingraph"], cwd=cwd_path, text=True, stderr=subprocess.DEVNULL)
             return msg, diff
     except Exception:
         pass
     return None, ""
 
 def harvest_antigravity_transcript(max_age_hours=4):
-    user_home = str(Path.home())
-    antigravity_brain_path = os.path.join(user_home, ".gemini", "antigravity", "brain")
-    if not os.path.exists(antigravity_brain_path):
-        app_data = os.environ.get("USERPROFILE", "")
-        if app_data:
-            antigravity_brain_path = os.path.join(app_data, ".gemini", "antigravity", "brain")
-            
-    if not os.path.exists(antigravity_brain_path):
+    user_home = Path.home().resolve()
+    antigravity_brain_path = user_home / ".gemini" / "antigravity" / "brain"
+    if not antigravity_brain_path.exists():
         return None
+    
+    antigravity_brain_path = str(antigravity_brain_path)
     
     transcripts = []
     now = datetime.datetime.now()
@@ -373,8 +389,8 @@ def harvest_temp_chat_history(root_dir):
             pass
     return None
 
-def load_agents_db():
-    root = Path.cwd()
+def load_agents_db(root_dir=None):
+    root = Path(root_dir) if root_dir else Path.cwd()
     db_file = root / ".braingraph" / "agents.json"
     if db_file.exists():
         try:
@@ -386,14 +402,14 @@ def load_agents_db():
         "agents": {
             "Claude Code": {"status": "Available", "limit_type": "Message-based", "max_limit": 50, "reset_time_hours": 5, "last_used": None, "manual_offset": 0},
             "Windsurf Cascade": {"status": "Available", "limit_type": "Premium quota", "max_limit": 500, "reset_time_hours": None, "last_used": None, "manual_offset": 0},
-            "Antigravity": {"status": "Available", "limit_type": "Token-based", "max_limit": 100, "reset_time_hours": null, "last_used": None, "manual_offset": 0},
-            "Cursor Copilot/Composer": {"status": "Available", "limit_type": "Premium fast", "max_limit": 500, "reset_time_hours": null, "last_used": None, "manual_offset": 0},
-            "Aider": {"status": "Available", "limit_type": "Key-based", "max_limit": null, "reset_time_hours": null, "last_used": None, "manual_offset": 0}
+            "Antigravity": {"status": "Available", "limit_type": "Token-based", "max_limit": 100, "reset_time_hours": None, "last_used": None, "manual_offset": 0},
+            "Cursor Copilot/Composer": {"status": "Available", "limit_type": "Premium fast", "max_limit": 500, "reset_time_hours": None, "last_used": None, "manual_offset": 0},
+            "Aider": {"status": "Available", "limit_type": "Key-based", "max_limit": None, "reset_time_hours": None, "last_used": None, "manual_offset": 0}
         }
     }
 
-def save_agents_db(db):
-    root = Path.cwd()
+def save_agents_db(db, root_dir=None):
+    root = Path(root_dir) if root_dir else Path.cwd()
     sb_dir = root / ".braingraph"
     sb_dir.mkdir(exist_ok=True)
     db_file = sb_dir / "agents.json"
@@ -1121,7 +1137,7 @@ def load_code_graph(root_dir):
         "parents": parents
     }
 
-def analyze_downstream_impact(graph, modified_files, max_depth=2):
+def analyze_downstream_impact(graph, modified_files, max_depth=2, root_dir=None):
     if not graph:
         return None, ""
         
@@ -1153,7 +1169,8 @@ def analyze_downstream_impact(graph, modified_files, max_depth=2):
                     p_label = p_info.get("label") or parent
                     p_file = p_info.get("file") or p_info.get("path") or ""
                     if p_file:
-                        p_file = os.path.relpath(p_file, Path.cwd()).replace('\\', '/')
+                        ref_dir = root_dir if root_dir else Path.cwd()
+                        p_file = os.path.relpath(p_file, ref_dir).replace('\\', '/')
                     
                     affected_symbols.add((p_label, p_file))
                     
@@ -1358,11 +1375,11 @@ def stop_watchdog():
         except Exception:
             pass
 
-def cmd_init():
+def cmd_init(root_dir=None):
+    root = Path(root_dir) if root_dir else Path.cwd()
     print("==================================================")
-    print("Initializing BrainGraph Configuration Rules...")
+    print(f"Initializing BrainGraph Configuration Rules in {root}...")
     print("==================================================")
-    root = Path.cwd()
     
     sb_dir = root / ".braingraph"
     sb_dir.mkdir(exist_ok=True)
@@ -1383,7 +1400,7 @@ def cmd_init():
     if not at_file.exists():
         at_file.write_text("""# Active Task: [No active task loaded]
 
-Run `python .braingraph/scripts/braingraph.py start \"Task Name\"` to begin.
+Run `python .braingraph/scripts/braingraph.py start "Task Name"` to begin.
 
 ## Goals & Requirements
 - [ ] Requirement 1
@@ -1424,6 +1441,19 @@ No handoff data yet.
         print("  Created .braingraph/temp_chat_history.md")
         
     # Copy the script to .braingraph/scripts/braingraph.py if it is running from elsewhere
+    import shutil
+    try:
+        src_script = Path(__file__)
+        shutil.copy2(src_script, sb_dir / "scripts" / "braingraph.py")
+        print("  Copied braingraph.py script to target project.")
+        
+        src_html = src_script.parent / "dashboard.html"
+        if src_html.exists():
+            shutil.copy2(src_html, sb_dir / "scripts" / "dashboard.html")
+            print("  Copied dashboard.html to target project.")
+    except Exception as e:
+        print(f"  Warning: Could not copy files: {e}")
+        
     print("\nBrainGraph successfully initialized!")
 
 def cmd_start(task_name):
@@ -1784,13 +1814,65 @@ def markdown_to_html(md_text):
 import http.server
 import socketserver
 
+def discover_projects(root_dir=None):
+    root = Path(root_dir) if root_dir else Path.cwd()
+    projects = []
+    seen_paths = set()
+    
+    # Check the root directory itself
+    try:
+        has_git = (root / ".git").is_dir()
+        has_bg = (root / ".braingraph").is_dir()
+        if has_git or has_bg:
+            resolved_path = str(root.resolve()).replace('\\', '/')
+            projects.append({
+                "name": root.name or str(root),
+                "path": resolved_path,
+                "has_git": has_git,
+                "has_braingraph": has_bg
+            })
+            seen_paths.add(resolved_path)
+    except Exception:
+        pass
+        
+    # Check immediate subdirectories
+    try:
+        for item in root.iterdir():
+            if item.is_dir():
+                if item.name.startswith('.') and item.name not in ('.git', '.braingraph'):
+                    continue
+                try:
+                    item_git = (item / ".git").is_dir()
+                    item_bg = (item / ".braingraph").is_dir()
+                    if item_git or item_bg:
+                        resolved_path = str(item.resolve()).replace('\\', '/')
+                        if resolved_path not in seen_paths:
+                            projects.append({
+                                "name": item.name,
+                                "path": resolved_path,
+                                "has_git": item_git,
+                                "has_braingraph": item_bg
+                            })
+                            seen_paths.add(resolved_path)
+                except Exception:
+                    pass
+    except Exception:
+        pass
+        
+    projects.sort(key=lambda x: x["name"].lower())
+    return projects
+
 class DashboardHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         # Suppress request logging to keep the console output clean
         pass
         
     def do_GET(self):
-        if self.path == "/":
+        parsed_url = urllib.parse.urlparse(self.path)
+        path = parsed_url.path
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+        
+        if path == "/":
             self.send_response(200)
             self.send_header("Content-Type", "text/html; charset=utf-8")
             self.end_headers()
@@ -1799,22 +1881,34 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 self.wfile.write(html_path.read_bytes())
             else:
                 self.wfile.write(b"<h1>Dashboard file not found</h1>")
-        elif self.path == "/api/status":
+        elif path == "/api/projects":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            projects = discover_projects()
+            self.wfile.write(json.dumps({"projects": projects}).encode("utf-8"))
+        elif path == "/api/status":
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             
-            root = Path.cwd()
+            proj_param = query_params.get("project", [None])[0]
+            root = resolve_safe_project_path(proj_param)
+                
             sb_dir = root / ".braingraph"
+            has_bg = sb_dir.is_dir()
             
             at_content = ""
-            at_file = sb_dir / "active_task.md"
-            if at_file.exists():
-                at_content = at_file.read_text(encoding="utf-8")
+            if has_bg:
+                at_file = sb_dir / "active_task.md"
+                if at_file.exists():
+                    at_content = at_file.read_text(encoding="utf-8")
+            else:
+                at_content = "# Project Not Initialized\n\nBrainGraph is not yet initialized for this project directory."
                 
             at_html = markdown_to_html(at_content)
             
-            staged, unstaged, untracked = scan_git_status()
+            staged, unstaged, untracked = scan_git_status(root)
             recent_files = scan_recent_files(root)
             
             graph = load_code_graph(root)
@@ -1823,12 +1917,14 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
                 modified_files.append(rf)
             modified_files = list(set(modified_files))
             
-            affected_symbols, mermaid_diagram = analyze_downstream_impact(graph, modified_files)
+            affected_symbols, mermaid_diagram = analyze_downstream_impact(graph, modified_files, root_dir=root)
             
-            db = load_agents_db()
+            db = load_agents_db(root)
             usage = calculate_agent_usage(root)
             
             status_data = {
+                "has_braingraph": has_bg,
+                "project_path": str(root).replace('\\', '/'),
                 "active_task_html": at_html,
                 "staged": staged,
                 "unstaged": unstaged,
@@ -1844,33 +1940,64 @@ class DashboardHandler(http.server.BaseHTTPRequestHandler):
             self.wfile.write(b"Not Found")
             
     def do_POST(self):
-        if self.path == "/api/toggle_agent":
-            content_length = int(self.headers['Content-Length'])
-            post_data = self.rfile.read(content_length)
-            data = json.loads(post_data.decode('utf-8'))
+        parsed_url = urllib.parse.urlparse(self.path)
+        path = parsed_url.path
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+        
+        content_length = int(self.headers.get('Content-Length', 0))
+        data = {}
+        if content_length > 0:
+            try:
+                post_data = self.rfile.read(content_length)
+                data = json.loads(post_data.decode('utf-8'))
+            except Exception:
+                pass
+                
+        project_path = data.get("project")
+        if not project_path:
+            project_path = query_params.get("project", [None])[0]
             
+        root = resolve_safe_project_path(project_path)
+            
+        if path == "/api/toggle_agent":
             name = data.get("name")
             new_status = data.get("status")
             
-            db = load_agents_db()
+            db = load_agents_db(root)
             if name in db.get("agents", {}):
                 db["agents"][name]["status"] = new_status
                 db["agents"][name]["last_updated"] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-                save_agents_db(db)
+                save_agents_db(db, root)
                 self.send_response(200)
+                self.send_header("Content-Type", "application/json")
                 self.end_headers()
                 self.wfile.write(b'{"success":true}')
             else:
                 self.send_response(400)
+                self.send_header("Content-Type", "application/json")
                 self.end_headers()
-        elif self.path == "/api/reset_offsets":
-            db = load_agents_db()
+                self.wfile.write(b'{"error":"Agent not found"}')
+        elif path == "/api/reset_offsets":
+            db = load_agents_db(root)
             for name in db.get("agents", {}):
                 db["agents"][name]["manual_offset"] = 0
-            save_agents_db(db)
+            save_agents_db(db, root)
             self.send_response(200)
+            self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(b'{"success":true}')
+        elif path == "/api/init_project":
+            if root.exists() and root.is_dir():
+                cmd_init(root)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"success":true}')
+            else:
+                self.send_response(400)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                self.wfile.write(b'{"error":"Project path does not exist or is not a directory"}')
         else:
             self.send_response(404)
             self.end_headers()
