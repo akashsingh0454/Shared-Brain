@@ -11,7 +11,7 @@ It is designed to solve **context drift**, **billing limit exhaustion**, and **m
 ## Architecture Overview
 
 BrainGraph operates on three distinct layers:
-1. **Structural Code Graph**: Parses AST relationships (using Graphify's `graph.json` output) to map file and symbol dependencies.
+1. **Structural Code Graph**: Parses AST and regex relationships natively to map file and symbol dependencies across multiple languages (Python, JS/TS, Go, Rust, C++, Java) with zero external dependencies and no node limits.
 2. **Workspace Modifications Tracker**: Detects staged/unstaged changes, untracked files, and recent WIP commits.
 3. **Intent & History Log**: Maintains a single source of truth for task goals (`active_task.md`) and a synced cross-device turn-based history (`temp_chat_history.md`).
 
@@ -20,7 +20,7 @@ BrainGraph operates on three distinct layers:
 ## Key Features
 
 ### 1. Downstream Impact Profiling
-On task resumption, BrainGraph queries Graphify's static index. If you edited `auth.py`, it traverses the dependency graph in reverse and warns the incoming agent:
+On task resumption, BrainGraph dynamically parses the codebase to build a local, in-memory dependency graph. If you edited `auth.py`, it traverses caller symbols in reverse and warns the incoming agent:
 > *The following downstream symbols depend on your changes: `run_app` (in `main.py`). Be careful when verifying.*
 It also automatically compiles a Mermaid diagram of the affected callflow in `.braingraph/active_graph.md`.
 
@@ -50,7 +50,7 @@ python .braingraph/scripts/braingraph.py init
 # Start a new task (automatically launches the watchdog)
 python .braingraph/scripts/braingraph.py start "Your Task Description"
 
-# Compile context for the next agent, analyzing git edits & Graphify dependencies
+# Compile context for the next agent, analyzing git edits & native AST/regex dependencies
 python .braingraph/scripts/braingraph.py resume
 
 # Manage agent availability and view Task Usage statistics
